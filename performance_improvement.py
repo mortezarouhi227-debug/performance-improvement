@@ -15,9 +15,12 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]
 
 # ---------- اتصال ----------
-# خواندن JSON از Environment Variable در Render
-creds_json = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
+if os.environ.get("GOOGLE_CREDENTIALS"):
+    creds_json = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+    creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
+else:
+    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+
 client = gspread.authorize(creds)
 ss = client.open_by_key(SPREADSHEET_ID)
 
@@ -32,7 +35,7 @@ ref_raw = out_ws.acell("B1").value
 if not ref_raw:
     raise SystemExit("⚠️ خطا: سلول B1 خالی است (تاریخ مرجع).")
 shift_val = (out_ws.acell("C1").value or "").strip()
-done_flag = (out_ws.acell("D1").value or "").strip().lower()
+done_flag = (out_ws.acell("D1").value or "").strip()
 
 # تبدیل تاریخ
 ref_date = None
@@ -106,6 +109,17 @@ for r in rows:
     if shift_val and shift_val != "" and shift_str != shift_val:
         continue
 
+    # ---------- منطق Done / Not Done ----------
+    if done_flag == "Done":
+        if date_parsed < start_date_only:
+            logs_before_window.add(name)
+            continue
+        if not (start_date_only <= date_parsed < ref_date_only):
+            continue
+    else:  # Not Done
+        if not (start_date_only <= date_parsed < ref_date_only):
+            continue
+
     perf = parse_percent(r[idx_perf_with]) if idx_perf_with < len(r) else None
     occ = float(r[idx_occ]) if idx_occ != -1 and r[idx_occ] else 0
     try:
@@ -114,19 +128,12 @@ for r in rows:
         hour_val = None
 
     entry = {"date": date_parsed, "hour": hour_val, "perf": perf, "occ": occ}
+    user_logs.setdefault(name, {}).setdefault(task, []).append(entry)
 
-    # ✅ منطق Done و Not Done
-    if date_parsed < start_date_only:
-        logs_before_window.add(name)
-
-    if start_date_only <= date_parsed < ref_date_only:
-        user_logs.setdefault(name, {}).setdefault(task, []).append(entry)
-
-# 🔹 اعمال شرط Done
-if done_flag == "done":
-    for bad_user in logs_before_window:
-        if bad_user in user_logs:
-            del user_logs[bad_user]
+if done_flag == "Done":
+    for n in list(user_logs.keys()):
+        if n in logs_before_window:
+            del user_logs[n]
 
 # ---------- جمع‌آوری Warning و Quality ----------
 def collect_counts(ws_name, name_cols, date_cols, count_cols):
@@ -190,13 +197,13 @@ for name, task_dict in user_logs.items():
         diff_days = ""
 
         if first_perf_val is not None and first_perf_val >= 100:
+            diff_days = 1  # ✅ حداقل ۱ روز
             status_row.append("✅")
         else:
             above = next((e for e in logs_sorted if e["perf"] is not None and e["perf"] >= 100), None)
             if above:
                 above_perf = f"{above['perf']:.0f}%"
-                diff_days = (above["date"] - first["date"]).days
-                if diff_days == 0: diff_days = ""
+                diff_days = (above["date"] - first["date"]).days + 1  # ✅ همیشه حداقل ۱
                 status_row.append("✅")
             else:
                 status_row.append("❌")
@@ -262,3 +269,5 @@ for task, col in col_map.items():
         out_ws.update(f"{col}5", rows_out)
 
 print("✅ سه جدول ساخته شد و داخل Performance_Improvement ذخیره گردید.")
+
+
