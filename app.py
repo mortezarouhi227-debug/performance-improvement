@@ -1,5 +1,6 @@
 from flask import Flask, jsonify
 import subprocess
+import sys
 
 app = Flask(__name__)
 
@@ -10,15 +11,13 @@ def home():
 @app.route("/run-performance-improvement", methods=["GET"])
 def run_performance_improvement():
     try:
-        # اجرای مستقیم اسکریپت performance_improvement.py
+        # اجرای اسکریپت performance_improvement.py
         result = subprocess.run(
-            ["python", "performance_improvement.py"],
-            capture_output=True,
-            text=True,
-            check=True
+            [sys.executable, "performance_improvement.py"],
+            capture_output=True, text=True, check=True
         )
         return jsonify({
-            "status": "ok",
+            "status": "success",
             "output": result.stdout
         })
     except subprocess.CalledProcessError as e:
@@ -26,3 +25,6 @@ def run_performance_improvement():
             "status": "error",
             "output": e.stderr
         }), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)

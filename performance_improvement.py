@@ -1,5 +1,6 @@
 # performance_improvement.py
 import gspread
+import os, json
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
 
@@ -14,7 +15,9 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]
 
 # ---------- اتصال ----------
-creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+# خواندن JSON از Environment Variable در Render
+creds_json = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
 client = gspread.authorize(creds)
 ss = client.open_by_key(SPREADSHEET_ID)
 
@@ -259,4 +262,3 @@ for task, col in col_map.items():
         out_ws.update(f"{col}5", rows_out)
 
 print("✅ سه جدول ساخته شد و داخل Performance_Improvement ذخیره گردید.")
-
