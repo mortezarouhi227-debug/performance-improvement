@@ -1,21 +1,22 @@
-from flask import Flask
+from flask import Flask, jsonify
 import subprocess
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "🎉 Performance Improvement API is running on Render!"
+    return "🎉 Performance Improvement API is running!"
 
-@app.route("/run", methods=["GET"])
-def run_script():
+@app.route("/run-performance-improvement", methods=["GET"])
+def run_performance_improvement():
     try:
+        # اجرای اسکریپت performance_improvement.py
         result = subprocess.run(
             ["python", "performance_improvement.py"],
             capture_output=True,
             text=True,
             check=True
         )
-        return f"[OK] performance_improvement executed ✅\n{result.stdout}", 200
+        return jsonify({"status": "ok", "output": result.stdout})
     except subprocess.CalledProcessError as e:
-        return f"[ERROR]\n{e.stderr}", 500
+        return jsonify({"status": "error", "output": e.stderr}), 500
