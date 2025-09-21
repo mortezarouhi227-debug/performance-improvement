@@ -1,7 +1,5 @@
-
 # performance_improvement.py
 import gspread
-import os, json
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
 
@@ -16,8 +14,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]
 
 # ---------- اتصال ----------
-creds_json = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-creds = Credentials.from_service_account_info(creds_json, scopes=SCOPES)
+creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
 client = gspread.authorize(creds)
 ss = client.open_by_key(SPREADSHEET_ID)
 
@@ -32,7 +29,7 @@ ref_raw = out_ws.acell("B1").value
 if not ref_raw:
     raise SystemExit("⚠️ خطا: سلول B1 خالی است (تاریخ مرجع).")
 shift_val = (out_ws.acell("C1").value or "").strip()
-done_flag = (out_ws.acell("D1").value or "").strip()
+done_flag = (out_ws.acell("D1").value or "").strip().lower()
 
 # تبدیل تاریخ
 ref_date = None
@@ -106,10 +103,6 @@ for r in rows:
     if shift_val and shift_val != "" and shift_str != shift_val:
         continue
 
-    # فقط داده‌های داخل بازه ۳۰ روزه
-    if not (start_date_only <= date_parsed < ref_date_only):
-        continue
-
     perf = parse_percent(r[idx_perf_with]) if idx_perf_with < len(r) else None
     occ = float(r[idx_occ]) if idx_occ != -1 and r[idx_occ] else 0
     try:
@@ -118,7 +111,19 @@ for r in rows:
         hour_val = None
 
     entry = {"date": date_parsed, "hour": hour_val, "perf": perf, "occ": occ}
-    user_logs.setdefault(name, {}).setdefault(task, []).append(entry)
+
+    # ✅ منطق Done و Not Done
+    if date_parsed < start_date_only:
+        logs_before_window.add(name)
+
+    if start_date_only <= date_parsed < ref_date_only:
+        user_logs.setdefault(name, {}).setdefault(task, []).append(entry)
+
+# 🔹 اعمال شرط Done
+if done_flag == "done":
+    for bad_user in logs_before_window:
+        if bad_user in user_logs:
+            del user_logs[bad_user]
 
 # ---------- جمع‌آوری Warning و Quality ----------
 def collect_counts(ws_name, name_cols, date_cols, count_cols):
@@ -176,12 +181,12 @@ for name, task_dict in user_logs.items():
         logs_sorted = sorted(logs, key=lambda e: (e["date"], e["hour"] if e["hour"] is not None else -1))
         first = logs_sorted[0]
         first_perf_val = first["perf"]
+        first_perf = f"{first_perf_val:.0f}%" if first_perf_val is not None else ""
 
-        first_perf = (f"{first_perf_val:.0f}%" if first_perf_val is not None else "")
+        above_perf = ""
+        diff_days = ""
 
         if first_perf_val is not None and first_perf_val >= 100:
-            above_perf = ""
-            diff_days = ""
             status_row.append("✅")
         else:
             above = next((e for e in logs_sorted if e["perf"] is not None and e["perf"] >= 100), None)
@@ -191,15 +196,13 @@ for name, task_dict in user_logs.items():
                 if diff_days == 0: diff_days = ""
                 status_row.append("✅")
             else:
-                above_perf = ""
-                diff_days = ""
                 status_row.append("❌")
 
         day_set = set(e["date"] for e in logs_sorted if e["hour"] is not None)
         day_count = len(day_set)
 
         perfs = [e["perf"] for e in logs_sorted if e["perf"] is not None]
-        avg_perf = (f"{(sum(perfs)/len(perfs)):.0f}%" if perfs else "")
+        avg_perf = f"{(sum(perfs)/len(perfs)):.0f}%" if perfs else ""
         occ_sum = sum(e["occ"] for e in logs_sorted if e["occ"])
 
         row_out += [first_perf, above_perf, diff_days, avg_perf, occ_sum, day_count]
@@ -207,7 +210,6 @@ for name, task_dict in user_logs.items():
         if perfs:
             avg_per_task.setdefault(task, {})[name] = sum(perfs)/len(perfs)
 
-    # 🔹 Warning و Quality
     row_out += [warn_map.get(name, ""), qual_map.get(name, "")]
     main_results.append(row_out)
     status_per_task[name] = status_row
@@ -257,3 +259,4 @@ for task, col in col_map.items():
         out_ws.update(f"{col}5", rows_out)
 
 print("✅ سه جدول ساخته شد و داخل Performance_Improvement ذخیره گردید.")
+
