@@ -239,35 +239,66 @@ if status_results:
     out_ws.update("BA4", [status_headers])
     out_ws.update("BA5", status_results)
 
-# ---------- جدول دوم (Threshold Table) ----------
-col_map = {
-    "Receive": "BK",
-    "Locate": "BL",
-    "Pick": "BM",
-    "Presort": "BN",
-    "Sort": "BO",
-    "Pack_Multi": "BP",
-    "Pack_Single": "BQ",
-    "Stock taking": "BR"
+# ---------- جدول سوم (Threshold Table؛ دو ستونه: نام | درصد) ----------
+# زوج‌ستون‌های ثابت برای هر تسک: (ستون نام، ستون درصد)
+col_pairs = {
+    "Receive":      ("BK", "BL"),
+    "Locate":       ("BM", "BN"),
+    "Pick":         ("BO", "BP"),
+    "Presort":      ("BQ", "BR"),
+    "Sort":         ("BS", "BT"),
+    "Pack_Multi":   ("BU", "BV"),
+    "Pack_Single":  ("BW", "BX"),
+    "Stock taking": ("BY", "BZ"),
 }
 
-for task, col in col_map.items():
-    min_thr = parse_percent(out_ws.acell(f"{col}2").value)
-    max_thr = parse_percent(out_ws.acell(f"{col}1").value)
-    out_ws.update(f"{col}4", [[task]])
+# آستانه‌ها از ستون نام (ردیف‌های 1 و 2) خوانده می‌شوند؛ تغییری در چینش بالای شیت لازم نیست
+thr_cols = {
+    "Receive": "BK",
+    "Locate": "BM",
+    "Pick": "BO",
+    "Presort": "BQ",
+    "Sort": "BS",
+    "Pack_Multi": "BU",
+    "Pack_Single": "BW",
+    "Stock taking": "BY",
+}
 
+# پاکسازی خروجی‌های قدیمی از ردیف 4 به بعد برای هر زوج‌ستون (نام و درصد)
+to_clear = []
+for name_col, perc_col in col_pairs.values():
+    to_clear.append(f"{name_col}4:{name_col}{out_ws.row_count}")
+    to_clear.append(f"{perc_col}4:{perc_col}{out_ws.row_count}")
+if to_clear:
+    out_ws.batch_clear(to_clear)
+
+# پر کردن جدول سوم
+for task, (name_col, perc_col) in col_pairs.items():
+    # هدر ردیف 4
+    out_ws.update(f"{name_col}4", [[task]])                 # عنوان تسک (ستون نام)
+    out_ws.update(f"{perc_col}4", [["میانگین درصد کلان"]])  # عنوان ستون درصد
+
+    # آستانه‌ها
+    max_thr = parse_percent(out_ws.acell(f"{thr_cols[task]}1").value)
+    min_thr = parse_percent(out_ws.acell(f"{thr_cols[task]}2").value)
+
+    # فیلتر لیست انتخابی‌ها طبق min/max
     selected = []
-    for name, avg in avg_per_task.get(task, {}).items():
-        if min_thr is not None and max_thr is not None:
-            if min_thr <= avg <= max_thr:
-                selected.append((name, avg))
+    for n, avg in avg_per_task.get(task, {}).items():
+        if min_thr is not None and max_thr is not None and (min_thr <= avg <= max_thr):
+            selected.append((n, avg))
 
     selected.sort(key=lambda x: x[1], reverse=True)
-    rows_out = [[f"{n} {round(v,1)}%"] for n, v in selected]
 
-    if rows_out:
-        out_ws.update(f"{col}5", rows_out)
+    # نوشتن داده‌ها: دو ستونه از ردیف 5 (نام | درصد)
+    if selected:
+        rows_out = [[n, f"{round(v,1)}%"] for n, v in selected]
+        out_ws.update(f"{name_col}5", rows_out)  # perc_col خودکار ستون بعدی است
+
+    # درج میانگین درصد همان ستون در ردیف 3 (ابتدا پاک می‌کنیم تا مقدار قبلی نماند)
+    out_ws.update(f"{perc_col}3", [[""]])
+    if selected:
+        avg_val = round(sum(v for _, v in selected) / len(selected), 1)
+        out_ws.update(f"{perc_col}3", [[f"{avg_val}%"]])
 
 print("✅ سه جدول ساخته شد و داخل Performance_Improvement ذخیره گردید.")
-
-
