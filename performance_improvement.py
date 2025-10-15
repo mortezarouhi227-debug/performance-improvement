@@ -197,13 +197,13 @@ for name, task_dict in user_logs.items():
         diff_days = ""
 
         if first_perf_val is not None and first_perf_val >= 100:
-            diff_days = 1  # ✅ حداقل ۱ روز
+            diff_days = 1
             status_row.append("✅")
         else:
             above = next((e for e in logs_sorted if e["perf"] is not None and e["perf"] >= 100), None)
             if above:
                 above_perf = f"{above['perf']:.0f}%"
-                diff_days = (above["date"] - first["date"]).days + 1  # ✅ همیشه حداقل ۱
+                diff_days = (above["date"] - first["date"]).days + 1
                 status_row.append("✅")
             else:
                 status_row.append("❌")
@@ -239,8 +239,7 @@ if status_results:
     out_ws.update("BA4", [status_headers])
     out_ws.update("BA5", status_results)
 
-# ---------- جدول سوم (Threshold Table؛ دو ستونه: نام | درصد) ----------
-# زوج‌ستون‌های ثابت برای هر تسک: (ستون نام، ستون درصد)
+# ---------- جدول سوم (Threshold Table؛ دو ستونه: نام | درصد + میانگین‌ها) ----------
 col_pairs = {
     "Receive":      ("BK", "BL"),
     "Locate":       ("BM", "BN"),
@@ -252,53 +251,51 @@ col_pairs = {
     "Stock taking": ("BY", "BZ"),
 }
 
-# آستانه‌ها از ستون نام (ردیف‌های 1 و 2) خوانده می‌شوند؛ تغییری در چینش بالای شیت لازم نیست
 thr_cols = {
-    "Receive": "BK",
-    "Locate": "BM",
-    "Pick": "BO",
-    "Presort": "BQ",
-    "Sort": "BS",
-    "Pack_Multi": "BU",
-    "Pack_Single": "BW",
-    "Stock taking": "BY",
+    "Receive": "BK", "Locate": "BM", "Pick": "BO", "Presort": "BQ",
+    "Sort": "BS", "Pack_Multi": "BU", "Pack_Single": "BW", "Stock taking": "BY"
 }
 
-# پاکسازی خروجی‌های قدیمی از ردیف 4 به بعد برای هر زوج‌ستون (نام و درصد)
+# پاکسازی فقط داده‌ها از ردیف ۵ به بعد
 to_clear = []
 for name_col, perc_col in col_pairs.values():
-    to_clear.append(f"{name_col}4:{name_col}{out_ws.row_count}")
-    to_clear.append(f"{perc_col}4:{perc_col}{out_ws.row_count}")
+    to_clear.append(f"{name_col}5:{name_col}{out_ws.row_count}")
+    to_clear.append(f"{perc_col}5:{perc_col}{out_ws.row_count}")
 if to_clear:
     out_ws.batch_clear(to_clear)
 
-# پر کردن جدول سوم
+# تولید جدول سوم
 for task, (name_col, perc_col) in col_pairs.items():
-    # هدر ردیف 4
-    out_ws.update(f"{name_col}4", [[task]])                 # عنوان تسک (ستون نام)
-    out_ws.update(f"{perc_col}4", [["میانگین درصد کلان"]])  # عنوان ستون درصد
+    if not out_ws.acell(f"{name_col}4").value:
+        out_ws.update(f"{name_col}4", [[task]])
+    if not out_ws.acell(f"{perc_col}4").value:
+        out_ws.update(f"{perc_col}4", [["میانگین درصد کلان"]])
 
-    # آستانه‌ها
     max_thr = parse_percent(out_ws.acell(f"{thr_cols[task]}1").value)
     min_thr = parse_percent(out_ws.acell(f"{thr_cols[task]}2").value)
 
-    # فیلتر لیست انتخابی‌ها طبق min/max
     selected = []
     for n, avg in avg_per_task.get(task, {}).items():
-        if min_thr is not None and max_thr is not None and (min_thr <= avg <= max_thr):
+        if min_thr is not None and max_thr is not None and min_thr <= avg <= max_thr:
             selected.append((n, avg))
 
     selected.sort(key=lambda x: x[1], reverse=True)
 
-    # نوشتن داده‌ها: دو ستونه از ردیف 5 (نام | درصد)
     if selected:
-        rows_out = [[n, f"{round(v,1)}%"] for n, v in selected]
-        out_ws.update(f"{name_col}5", rows_out)  # perc_col خودکار ستون بعدی است
+        out_ws.update(f"{name_col}5", [[n, f"{round(v,1)}%"] for n, v in selected])
 
-    # درج میانگین درصد همان ستون در ردیف 3 (ابتدا پاک می‌کنیم تا مقدار قبلی نماند)
+    # میانگین تسک در همان ستون درصد
     out_ws.update(f"{perc_col}3", [[""]])
     if selected:
         avg_val = round(sum(v for _, v in selected) / len(selected), 1)
         out_ws.update(f"{perc_col}3", [[f"{avg_val}%"]])
+
+# ✅ میانگین کل برای هر ستون درصد
+for _, perc_col in col_pairs.values():
+    col_values = out_ws.col_values(gspread.utils.a1_to_rowcol(f"{perc_col}5")[1])
+    valid = [parse_percent(c) for c in col_values if parse_percent(c)]
+    if valid:
+        avg_col = round(sum(valid) / len(valid), 1)
+        out_ws.update(f"{perc_col}3", [[f"{avg_col}%"]])
 
 print("✅ سه جدول ساخته شد و داخل Performance_Improvement ذخیره گردید.")
