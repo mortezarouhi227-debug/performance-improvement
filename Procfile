@@ -1,1 +1,1 @@
-web: gunicorn app:app --timeout 180 --access-logfile - --error-logfile -
+web: gunicorn app:app --workers 1 --threads 2 --timeout 600 --graceful-timeout 30 --keep-alive 5

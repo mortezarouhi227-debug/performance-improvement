@@ -5,7 +5,7 @@ from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
 
 # ---------- تنظیمات ----------
-SPREADSHEET_ID = "1VgKCQ8EjVF2sS8rSPdqFZh2h6CuqWAeqSMR56APvwes"
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1VgKCQ8EjVF2sS8rSPdqFZh2h6CuqWAeqSMR56APvwes")
 ALL_DATA_SHEET = "All_Data"
 OUTPUT_SHEET = "Performance_Improvement"
 WARNING_SHEET = "Warning_Detail"
@@ -30,8 +30,8 @@ try:
 except gspread.WorksheetNotFound:
     out_ws = ss.add_worksheet(title=OUTPUT_SHEET, rows="3000", cols="200")
 
-# ---------- خواندن تاریخ مرجع، شیفت و Done/Not Done ----------
-ref_raw = out_ws.acell("B1").value
+# ---------- ورودی کنترل‌ها ----------
+ref_raw = (out_ws.acell("B1").value or "").strip()
 if not ref_raw:
     raise SystemExit("⚠️ خطا: سلول B1 خالی است (تاریخ مرجع).")
 shift_val = (out_ws.acell("C1").value or "").strip()
@@ -43,7 +43,7 @@ for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
     try:
         ref_date = datetime.strptime(ref_raw, fmt)
         break
-    except:
+    except Exception:
         continue
 if ref_date is None:
     raise SystemExit(f"⚠️ خطا: مقدار '{ref_raw}' قابل تبدیل به تاریخ نیست.")
@@ -53,13 +53,20 @@ start_date_only = (ref_date - timedelta(days=30)).date()
 
 # ---------- بارگذاری All_Data ----------
 vals = all_ws.get_all_values()
+if not vals or len(vals) < 2:
+    print("⚠️ All_Data خالی است یا فقط هدر دارد.")
+    out_ws.batch_clear([f"A5:BR{out_ws.row_count}", f"BA4:BR{out_ws.row_count}"])
+    raise SystemExit(0)
+
 headers = vals[0]
 rows = vals[1:]
 
+def _norm(s): return (s or "").strip().lower().replace(" ", "").replace("_", "")
+
 def find_idx(name):
-    target = name.strip().lower().replace(" ", "").replace("_", "")
+    target = _norm(name)
     for i, h in enumerate(headers):
-        if (h or "").strip().lower().replace(" ", "").replace("_", "") == target:
+        if _norm(h) == target:
             return i
     return -1
 
@@ -68,18 +75,24 @@ idx_task = find_idx("task_type")
 idx_date = find_idx("date")
 idx_hour = find_idx("hour")
 idx_perf_with = find_idx("performance_with_rotation")
-idx_shift = find_idx("Shift")
+idx_shift = find_idx("shift")  # case-insensitive
 idx_occ = find_idx("occupied_hours")
+
+# ستون‌های حیاتی
+for nm, idx in {"full_name": idx_full, "task_type": idx_task, "date": idx_date}.items():
+    if idx == -1:
+        raise SystemExit(f"⚠️ ستون حیاتی '{nm}' در All_Data پیدا نشد.")
 
 # ---------- helper ----------
 def parse_percent(x):
-    if not x: return None
+    if x is None: return None
     s = str(x).replace("%", "").replace(",", "").strip()
+    if s == "": return None
     try:
         v = float(s)
         if v <= 1: v *= 100
         return v
-    except:
+    except Exception:
         return None
 
 def parse_date_str(s):
@@ -88,9 +101,17 @@ def parse_date_str(s):
     for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
         try:
             return datetime.strptime(s, fmt).date()
-        except:
+        except Exception:
             continue
     return None
+
+def parse_float(x, default=0.0):
+    try:
+        if x is None or str(x).strip()=="":
+            return default
+        return float(x)
+    except Exception:
+        return default
 
 # ---------- جمع‌آوری لاگ‌ها ----------
 task_types = ["Receive", "Locate", "Pick", "Presort", "Sort", "Pack_Multi", "Pack_Single", "Stock taking"]
@@ -105,26 +126,28 @@ for r in rows:
         continue
 
     # فیلتر شیفت
-    shift_str = r[idx_shift] if idx_shift != -1 and idx_shift < len(r) else ""
-    if shift_val and shift_val != "" and shift_str != shift_val:
+    shift_str = r[idx_shift] if (idx_shift != -1 and idx_shift < len(r)) else ""
+    if shift_val and shift_str != shift_val:
         continue
 
-    # ---------- منطق Done / Not Done ----------
+    # Done/Not Done
     if done_flag == "Done":
         if date_parsed < start_date_only:
             logs_before_window.add(name)
             continue
         if not (start_date_only <= date_parsed < ref_date_only):
             continue
-    else:  # Not Done
+    else:
         if not (start_date_only <= date_parsed < ref_date_only):
             continue
 
-    perf = parse_percent(r[idx_perf_with]) if idx_perf_with < len(r) else None
-    occ = float(r[idx_occ]) if idx_occ != -1 and r[idx_occ] else 0
+    # ✅ اصلاح: مراقب idx_perf_with == -1
+    perf = parse_percent(r[idx_perf_with]) if (idx_perf_with != -1 and idx_perf_with < len(r)) else None
+    occ = parse_float(r[idx_occ], default=0.0) if (idx_occ != -1 and idx_occ < len(r)) else 0.0
+
     try:
-        hour_val = int(float(r[idx_hour])) if idx_hour < len(r) and r[idx_hour] else None
-    except:
+        hour_val = int(float(r[idx_hour])) if (idx_hour != -1 and idx_hour < len(r) and r[idx_hour]) else None
+    except Exception:
         hour_val = None
 
     entry = {"date": date_parsed, "hour": hour_val, "perf": perf, "occ": occ}
@@ -147,25 +170,21 @@ def collect_counts(ws_name, name_cols, date_cols, count_cols):
     hdr, body = vals[0], vals[1:]
 
     def find_any(cols):
-        for c in cols:
-            t = c.strip().lower().replace(" ", "").replace("_", "")
-            for i,h in enumerate(hdr):
-                if (h or "").strip().lower().replace(" ", "").replace("_", "") == t:
-                    return i
+        cand = [_norm(c) for c in cols]
+        for i,h in enumerate(hdr):
+            if _norm(h) in cand:
+                return i
         return -1
 
     idx_name, idx_date, idx_count = find_any(name_cols), find_any(date_cols), find_any(count_cols)
-    if idx_name == -1 or idx_date == -1 or idx_count == -1: return m
+    if -1 in (idx_name, idx_date, idx_count): return m
 
     for r in body:
-        nm = r[idx_name]
+        nm = r[idx_name] if idx_name < len(r) else ""
         d = parse_date_str(r[idx_date]) if idx_date < len(r) else None
         if not nm or d is None: continue
         if not (start_date_only <= d < ref_date_only): continue
-        try:
-            cnt = int(float(r[idx_count])) if r[idx_count] else 0
-        except:
-            cnt = 0
+        cnt = int(parse_float(r[idx_count], default=0)) if idx_count < len(r) else 0
         m[nm] = m.get(nm, 0) + cnt
     return m
 
@@ -226,7 +245,7 @@ for name, task_dict in user_logs.items():
 
 # ---------- پاک کردن داده‌های قبلی (فقط از ردیف ۵ به بعد) ----------
 last_row = out_ws.row_count
-out_ws.batch_clear([f"A5:BR{last_row}"])
+out_ws.batch_clear([f"A5:BR{last_row}", f"BA4:BR{last_row}"])  # وضعیت را هم پاک/بازنویسی می‌کنیم
 
 # ---------- جدول اول ----------
 if main_results:
@@ -239,7 +258,7 @@ if status_results:
     out_ws.update("BA4", [status_headers])
     out_ws.update("BA5", status_results)
 
-# ---------- جدول سوم (Threshold Table؛ دو ستونه: نام | درصد + میانگین‌ها) ----------
+# ---------- جدول سوم (Threshold Table؛ نام | درصد میانگین) ----------
 col_pairs = {
     "Receive":      ("BK", "BL"),
     "Locate":       ("BM", "BN"),
@@ -250,13 +269,12 @@ col_pairs = {
     "Pack_Single":  ("BW", "BX"),
     "Stock taking": ("BY", "BZ"),
 }
-
 thr_cols = {
     "Receive": "BK", "Locate": "BM", "Pick": "BO", "Presort": "BQ",
     "Sort": "BS", "Pack_Multi": "BU", "Pack_Single": "BW", "Stock taking": "BY"
 }
 
-# پاکسازی فقط داده‌ها از ردیف ۵ به بعد
+# پاکسازی داده‌های جدول سوم (از ردیف ۵ به بعد)
 to_clear = []
 for name_col, perc_col in col_pairs.values():
     to_clear.append(f"{name_col}5:{name_col}{out_ws.row_count}")
@@ -265,37 +283,37 @@ if to_clear:
     out_ws.batch_clear(to_clear)
 
 # تولید جدول سوم
+batch_updates = []
 for task, (name_col, perc_col) in col_pairs.items():
     if not out_ws.acell(f"{name_col}4").value:
-        out_ws.update(f"{name_col}4", [[task]])
+        batch_updates.append({"range": f"{name_col}4", "values": [[task]]})
     if not out_ws.acell(f"{perc_col}4").value:
-        out_ws.update(f"{perc_col}4", [["میانگین درصد کلان"]])
+        batch_updates.append({"range": f"{perc_col}4", "values": [["میانگین درصد کلان"]]})
 
     max_thr = parse_percent(out_ws.acell(f"{thr_cols[task]}1").value)
     min_thr = parse_percent(out_ws.acell(f"{thr_cols[task]}2").value)
 
     selected = []
-    for n, avg in avg_per_task.get(task, {}).items():
-        if min_thr is not None and max_thr is not None and min_thr <= avg <= max_thr:
+    for n, avg in (avg_per_task.get(task, {}) or {}).items():
+        ok = True
+        if min_thr is not None and avg < min_thr: ok = False
+        if max_thr is not None and avg > max_thr: ok = False
+        if ok:
             selected.append((n, avg))
 
     selected.sort(key=lambda x: x[1], reverse=True)
 
     if selected:
-        out_ws.update(f"{name_col}5", [[n, f"{round(v,1)}%"] for n, v in selected])
+        batch_updates.append({
+            "range": f"{name_col}5",
+            "values": [[n, f"{round(v,1)}%"] for n, v in selected]
+        })
+        avg_val = round(sum(v for _, v in selected)/len(selected), 1)
+        batch_updates.append({"range": f"{perc_col}3", "values": [[f"{avg_val}%"]]})
+    else:
+        batch_updates.append({"range": f"{perc_col}3", "values": [[""]]})
 
-    # میانگین تسک در همان ستون درصد
-    out_ws.update(f"{perc_col}3", [[""]])
-    if selected:
-        avg_val = round(sum(v for _, v in selected) / len(selected), 1)
-        out_ws.update(f"{perc_col}3", [[f"{avg_val}%"]])
-
-# ✅ میانگین کل برای هر ستون درصد
-for _, perc_col in col_pairs.values():
-    col_values = out_ws.col_values(gspread.utils.a1_to_rowcol(f"{perc_col}5")[1])
-    valid = [parse_percent(c) for c in col_values if parse_percent(c)]
-    if valid:
-        avg_col = round(sum(valid) / len(valid), 1)
-        out_ws.update(f"{perc_col}3", [[f"{avg_col}%"]])
+if batch_updates:
+    out_ws.batch_update(batch_updates)
 
 print("✅ سه جدول ساخته شد و داخل Performance_Improvement ذخیره گردید.")

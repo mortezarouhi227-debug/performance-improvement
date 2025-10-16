@@ -1,56 +1,70 @@
 # app.py
 from flask import Flask, request, jsonify
-import subprocess, sys, traceback, os
+import subprocess, sys, traceback, os, signal, shlex
 
 app = Flask(__name__)
 
 @app.get("/healthz")
 def healthz():
-    """برای تست سلامت سرویس"""
     return jsonify(ok=True, message="Server is healthy ✅"), 200
-
 
 @app.route("/run-performance-improvement", methods=["GET", "POST"])
 def run_performance_improvement():
     """
-    اجرای امن فایل performance_improvement.py
-    و بازگرداندن خروجی یا خطا به‌صورت JSON
+    اجرای امن performance_improvement.py و بازگشت خروجی/خطا به صورت JSON
     """
     try:
-        # اجرای اسکریپت با timeout مناسب
+        # تنظیمات
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        script_path = os.path.join(project_dir, "performance_improvement.py")
+
+        # timeout قابل تنظیم با env (پیش‌فرض 540 ثانیه)
+        try:
+            sp_timeout = int(os.environ.get("APP_SUBPROC_TIMEOUT", "540"))
+        except ValueError:
+            sp_timeout = 540
+
+        # اجرای اسکریپت
+        # نکته: preexec_fn=os.setsid برای ساختن گروه فرایندی تا بتوانیم kill گروه را راحت انجام دهیم
         result = subprocess.run(
-            [sys.executable, "performance_improvement.py"],
+            [sys.executable, script_path],
             capture_output=True,
             text=True,
-            timeout=180  # 👈 حداکثر زمان اجرا (3 دقیقه)
+            timeout=sp_timeout,
+            cwd=project_dir,
+            check=False,
+            preexec_fn=os.setsid  # فقط در لینوکس/رندر؛ در ویندوز نادیده گرفته می‌شود
         )
 
-        # اگر با SystemExit(1) یا خطای منطقی خارج شده باشد
+        stdout_txt = (result.stdout or "").strip()
+        stderr_txt = (result.stderr or "").strip()
+
         if result.returncode != 0:
-            # اگر پیام خطا در stderr باشد، همان را برگردان
-            err_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
-            # اگر خطای معروف 'سلول B1 خالی' باشد، وضعیت 400 بده
-            if "سلول B1 خالی" in err_msg or "تاریخ" in err_msg:
-                return jsonify(ok=False, error=err_msg), 400
-            else:
-                return jsonify(ok=False, error=err_msg), 500
+            # خطای منطقی/اجرایی
+            err_msg = stderr_txt or stdout_txt or "Unknown error"
+            status = 400 if ("سلول B1 خالی" in err_msg or "تاریخ" in err_msg) else 500
+            return jsonify(ok=False, error=err_msg, code=result.returncode), status
 
-        # اگر موفق بود
-        return jsonify(ok=True, stdout=result.stdout.strip()), 200
+        return jsonify(ok=True, stdout=stdout_txt), 200
 
-    except subprocess.TimeoutExpired:
-        # اگر بیش از 3 دقیقه طول کشید
+    except subprocess.TimeoutExpired as e:
+        # تلاش برای خاتمه گروه فرایندی اگر ساخته شده
+        try:
+            if hasattr(e, 'pid'):
+                os.killpg(e.pid, signal.SIGTERM)
+        except Exception:
+            pass
         return jsonify(ok=False, error="⏱ Timeout: اجرای اسکریپت بیش از حد مجاز طول کشید."), 504
 
     except Exception as e:
-        # هر خطای دیگر
         tb = traceback.format_exc()
         print(tb, flush=True)
         return jsonify(ok=False, error=str(e), trace=tb), 500
 
 
-# -------- برنامه اصلی --------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Server started on port {port}", flush=True)
-    app.run(host="0.0.0.0", port=port)
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    print(f"🚀 Server started on port {port} (debug={debug})", flush=True)
+    app.run(host="0.0.0.0", port=port, debug=debug)
+
